@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.Python
+
+# Secrets
+.env
+.env.local
+.streamlit/secrets.toml
+secrets.local.json
+
+# Generated
+output/
+work/
+logs/
+*.log
+.shared/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
