@@ -32,7 +32,10 @@ from pathlib import Path
 import pandas as pd
 import requests
 import streamlit as st
-import yfinance as yf
+# The commercial edition never imports a Yahoo/yfinance connector.
+# Yahoo's upstream data terms must not be assumed to permit resale.
+if os.getenv("FACTOR_DATA_HUB_MODE", "research").strip().lower() != "commercial":
+    import yfinance as yf
 
 # BOJ サーバは TLS 中間 CA を送らないため、Windows / macOS のシステム証明書ストアを
 # 使うよう truststore で切替える。インストールされていない環境では BOJ 取得のみが
@@ -46,6 +49,13 @@ except ImportError:
 
 
 st.set_page_config(page_title="ファクター/マーケットデータ取得", page_icon="📈", layout="wide")
+
+# A separate, non-network BYOD entry point is mandatory for commercial builds.
+# Keep the existing research-only flows unchanged and unavailable in this mode.
+if os.getenv("FACTOR_DATA_HUB_MODE", "research").strip().lower() == "commercial":
+    from commercial_byod import render_commercial_app
+    render_commercial_app()
+    st.stop()
 
 APP_DIR = Path(__file__).resolve().parent
 APPS_DIR = APP_DIR.parent
