@@ -69,7 +69,7 @@ class DataHubClientTests(unittest.TestCase):
 
     def test_rejects_checksum_mismatch(self):
         with self.assertRaisesRegex(DataHubError, "SHA-256"):
-            self.client(b"{}").load_macro_snapshot()
+            self.client(self.bundle_bytes[:-1] + b"x").load_macro_snapshot()
 
     def test_rejects_non_https_manifest_url(self):
         with self.assertRaises(DataHubError):
