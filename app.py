@@ -34,6 +34,8 @@ import requests
 import streamlit as st
 import yfinance as yf
 
+from datahub_official_macro import DataHubError, load_macro_snapshot
+
 # BOJ サーバは TLS 中間 CA を送らないため、Windows / macOS のシステム証明書ストアを
 # 使うよう truststore で切替える。インストールされていない環境では BOJ 取得のみが
 # SSL エラーになる（他の取得には影響しない）。
@@ -1002,6 +1004,7 @@ tabs = st.tabs([
     "🔧 個別取得",
     "📊 マクロ統合（Excel）",
     "📤 マクロ手動アップロード（FRED不通時）",
+    "🏛️ 公式データ-Hub",
 ])
 
 # ---------- Tab 1: ワンショット ----------
@@ -1807,3 +1810,46 @@ with tabs[4]:
                     f"\nUS: {save_info['us_rows']} 行 / JP: {save_info['jp_rows']} 行 / combined: {save_info['combined_rows']} 行"
                 )
                 preview_saved_xlsx(out_path, key_prefix="manual_macro")
+
+# ---------- Tab 6: data-Hub 公的マクロ統計 ----------
+with tabs[5]:
+    st.subheader("🏛️ data-Hub 公式マクロ統計")
+    st.caption("ManifestのURL一覧とSHA-256を検証してから、BLS/Census系列を閲覧します。既存のFRED・BOJ・Kenneth French取得やmacro.xlsxを変更しません。")
+    manifest_url = st.text_input(
+        "data-Hub latest manifest URL",
+        value=os.environ.get("DATA_HUB_MANIFEST_URL", ""),
+        key="datahub_manifest_url",
+        placeholder="https://公開ドメイン/latest/manifest.json",
+    )
+    if st.button("Manifestと公式バンドルを取得・検証", key="load_datahub_macro", disabled=not manifest_url.strip()):
+        try:
+            snapshot = load_macro_snapshot(manifest_url.strip())
+            metadata = pd.DataFrame(snapshot.metadata_rows())
+            st.success(
+                f"検証成功: release={snapshot.release_id or 'unknown'} / "
+                f"generated_at={snapshot.generated_at} / "
+                f"SHA-256={snapshot.file.sha256}"
+            )
+            st.caption(
+                f"公式系列 {len(snapshot.official_series)} 本。"
+                f"e-Stat候補テーブル {len(snapshot.estat_candidate_tables)} 件は未承認として別扱いです。"
+            )
+            if not metadata.empty:
+                st.dataframe(metadata.drop(columns=["metadata"]), use_container_width=True)
+                selected_id = st.selectbox(
+                    "閲覧する系列",
+                    metadata["series_id"].tolist(),
+                    key="datahub_series_id",
+                )
+                selected = next(
+                    item for item in snapshot.official_series
+                    if item.get("series_id") == selected_id
+                )
+                points = pd.DataFrame(selected.get("points", []))
+                st.dataframe(points, use_container_width=True)
+                if {"date", "value"}.issubset(points.columns):
+                    chart = points[["date", "value"]].copy()
+                    chart["value"] = pd.to_numeric(chart["value"], errors="coerce")
+                    st.line_chart(chart.set_index("date"))
+        except (DataHubError, OSError, ValueError) as exc:
+            st.error(f"data-Hubの取得または検証に失敗しました: {exc}")
