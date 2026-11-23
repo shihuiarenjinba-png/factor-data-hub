@@ -31,14 +31,20 @@ class DataHubClientTests(unittest.TestCase):
                 {"target_id": "jp.candidate",
                  "observations": [{"date": "2026-10-15", "value": 10}]}
             ],
-            "distribution": {"estat_candidates_approved": False},
+            "distribution": {
+                "entitlement_scope": "public_sample",
+                "max_lookback_months": 3,
+                "estat_candidates_approved": False,
+            },
         }
         self.bundle_bytes = json.dumps(self.bundle).encode("utf-8")
         self.manifest = {
+            "schema_version": 1,
             "published_at": "2026-11-30T03:17:00Z",
             "release_id": "sample-20261130T031700Z",
             "entitlement_scope": "public_sample",
             "max_lookback": 3,
+            "max_lookback_unit": "calendar_months_anchored_per_series_to_actual_latest_observation",
             "e_stat_candidates_approved": False,
             "files": {
                 "official-bundle.json": {
@@ -46,6 +52,7 @@ class DataHubClientTests(unittest.TestCase):
                     "sha256": hashlib.sha256(self.bundle_bytes).hexdigest(),
                     "byte_size": len(self.bundle_bytes),
                     "entitlement_scope": "public_sample",
+                    "data_status": "verified",
                     "content_type": "application/json; charset=utf-8",
                 }
             },
@@ -102,6 +109,35 @@ class DataHubClientTests(unittest.TestCase):
     def test_rejects_non_https_manifest_url(self):
         with self.assertRaises(DataHubError):
             DataHubClient("http://data.example/latest/manifest.json")
+
+    def test_rejects_asset_url_outside_authoritative_public_release(self):
+        manifest = json.loads(json.dumps(self.manifest))
+        manifest["files"]["official-bundle.json"]["url"] = "https://evil.example/official-bundle.json"
+        with self.assertRaisesRegex(DataHubError, "authoritative public Release"):
+            self.client(manifest=manifest).load_macro_snapshot()
+
+    def test_rejects_release_id_that_does_not_match_asset_path(self):
+        manifest = json.loads(json.dumps(self.manifest))
+        manifest["release_id"] = "sample-20261201T031700Z"
+        with self.assertRaisesRegex(DataHubError, "authoritative public Release"):
+            self.client(manifest=manifest).load_macro_snapshot()
+
+    def test_rejects_unsupported_manifest_lookback_unit(self):
+        manifest = json.loads(json.dumps(self.manifest))
+        manifest["max_lookback_unit"] = "days"
+        with self.assertRaisesRegex(DataHubError, "lookback unit"):
+            self.client(manifest=manifest).load_macro_snapshot()
+
+    def test_rejects_manifest_bundle_period_mismatch(self):
+        bundle = json.loads(self.bundle_bytes)
+        bundle["distribution"]["max_lookback_months"] = 2
+        raw = json.dumps(bundle).encode("utf-8")
+        manifest = json.loads(json.dumps(self.manifest))
+        item = manifest["files"]["official-bundle.json"]
+        item["sha256"] = hashlib.sha256(raw).hexdigest()
+        item["byte_size"] = len(raw)
+        with self.assertRaisesRegex(DataHubError, "lookback periods do not match"):
+            self.client(raw, manifest).load_macro_snapshot()
 
 
 if __name__ == "__main__":
