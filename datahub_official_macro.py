@@ -41,7 +41,7 @@ class MacroSnapshot:
 
     @property
     def release_id(self) -> str:
-        return str(self.manifest.get("distribution", {}).get("release_id", ""))
+        return str(self.manifest.get("release_id") or self.manifest.get("distribution", {}).get("release_id", ""))
 
     @property
     def official_series(self) -> tuple[dict[str, Any], ...]:
@@ -100,6 +100,38 @@ def _https_url(value: Any, label: str) -> str:
     return value
 
 
+def _validate_public_window(bundle: dict[str, Any], manifest: dict[str, Any]) -> None:
+    """Reject a bundle whose observations exceed the public manifest's short window."""
+    import calendar
+    from datetime import date
+
+    lookback = manifest.get("max_lookback", 3)
+    if not isinstance(lookback, int) or lookback < 1 or lookback > 3:
+        raise DataHubError("public manifest lookback is invalid")
+    if manifest.get("e_stat_candidates_approved") is not False:
+        raise DataHubError("e-Stat candidates must remain unapproved")
+
+    collections = [(item.get("points", []), "series") for item in bundle.get("series", [])]
+    collections.extend(
+        (item.get("observations", []), "e-Stat candidate")
+        for item in bundle.get("jp_candidates", [])
+    )
+    for points, label in collections:
+        if not points:
+            continue
+        try:
+            dates = [date.fromisoformat(str(point["date"])[:10]) for point in points]
+        except (KeyError, ValueError, TypeError):
+            raise DataHubError(f"{label} contains an invalid observation date") from None
+        latest = max(dates)
+        absolute = latest.year * 12 + latest.month - 1 - (lookback - 1)
+        year, month0 = divmod(absolute, 12)
+        month = month0 + 1
+        cutoff = date(year, month, min(latest.day, calendar.monthrange(year, month)[1]))
+        if min(dates) < cutoff or max(dates) > latest:
+            raise DataHubError(f"{label} exceeds the public manifest period")
+
+
 def _http_get(url: str, timeout: float) -> bytes:
     request = Request(url, headers={"User-Agent": "data-hub-consumer/1.0"})
     try:
@@ -131,23 +163,29 @@ class DataHubClient:
             manifest = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             raise DataHubError("manifest is not valid UTF-8 JSON") from None
-        if not isinstance(manifest, dict) or not manifest.get("generated_at"):
-            raise DataHubError("manifest is missing generated_at")
-        distribution = manifest.get("distribution")
-        files = distribution.get("files") if isinstance(distribution, dict) else None
+        if not isinstance(manifest, dict) or not (manifest.get("published_at") or manifest.get("generated_at")):
+            raise DataHubError("manifest is missing published_at")
+        if manifest.get("entitlement_scope") != "public_sample":
+            raise DataHubError("this adapter accepts public_sample manifests only")
+        files = manifest.get("files")
         if not isinstance(files, dict):
-            raise DataHubError("manifest is missing distribution.files")
+            distribution = manifest.get("distribution")
+            files = distribution.get("files") if isinstance(distribution, dict) else None
+        if not isinstance(files, dict):
+            raise DataHubError("manifest is missing files")
+        if manifest.get("max_lookback", 3) not in (1, 2, 3):
+            raise DataHubError("public manifest exceeds the supported lookback cap")
         return manifest
 
     def load_macro_snapshot(self) -> MacroSnapshot:
         manifest = self.load_manifest()
-        files = manifest["distribution"]["files"]
+        files = manifest.get("files") or manifest.get("distribution", {}).get("files", {})
         item = files.get("official-bundle.json")
         if not isinstance(item, dict):
             raise DataHubError("manifest does not list official-bundle.json")
         url = _https_url(item.get("url"), "official-bundle URL")
         expected_sha = item.get("sha256")
-        expected_size = item.get("size_bytes")
+        expected_size = item.get("byte_size", item.get("size_bytes"))
         if not isinstance(expected_sha, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", expected_sha):
             raise DataHubError("official bundle SHA-256 is missing or malformed")
         if not isinstance(expected_size, int) or expected_size < 1:
@@ -167,6 +205,7 @@ class DataHubClient:
             raise DataHubError("unsupported official bundle schema")
         if not isinstance(bundle.get("series"), list):
             raise DataHubError("official bundle series must be a list")
+        _validate_public_window(bundle, manifest)
 
         series_file = DataHubFile(
             name="official-bundle.json",
