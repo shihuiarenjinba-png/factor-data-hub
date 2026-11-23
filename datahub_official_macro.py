@@ -20,6 +20,11 @@ class DataHubError(ValueError):
     """The manifest or downloaded data-Hub file is invalid."""
 
 
+PUBLIC_REPOSITORY = "shihuiarenjinba-png/data-hub-distribution"
+PUBLIC_LOOKBACK_UNIT = "calendar_months_anchored_per_series_to_actual_latest_observation"
+PUBLIC_RELEASE_PATTERN = re.compile(r"^sample-[0-9]{8}T[0-9]{6}Z$")
+
+
 @dataclass(frozen=True)
 class DataHubFile:
     name: str
@@ -100,6 +105,23 @@ def _https_url(value: Any, label: str) -> str:
     return value
 
 
+def _public_asset_url(value: Any, release_id: str) -> str:
+    """Accept only the official bundle asset from its matching public Release."""
+    url = _https_url(value, "official bundle URL")
+    parsed = urlsplit(url)
+    expected_path = (
+        f"/{PUBLIC_REPOSITORY}/releases/download/{release_id}/official-bundle.json"
+    )
+    if (
+        parsed.hostname.lower() != "github.com"
+        or parsed.path != expected_path
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise DataHubError("official bundle URL is not the matching authoritative public Release asset")
+    return url
+
+
 def _validate_public_window(bundle: dict[str, Any], manifest: dict[str, Any]) -> None:
     """Reject a bundle whose observations exceed the public manifest's short window."""
     import calendar
@@ -163,18 +185,37 @@ class DataHubClient:
             manifest = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             raise DataHubError("manifest is not valid UTF-8 JSON") from None
-        if not isinstance(manifest, dict) or not (manifest.get("published_at") or manifest.get("generated_at")):
+        if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
+            raise DataHubError("unsupported public manifest schema")
+        if not isinstance(manifest.get("published_at"), str):
             raise DataHubError("manifest is missing published_at")
         if manifest.get("entitlement_scope") != "public_sample":
             raise DataHubError("this adapter accepts public_sample manifests only")
+
+        release_id = manifest.get("release_id")
+        if not isinstance(release_id, str) or not PUBLIC_RELEASE_PATTERN.fullmatch(release_id):
+            raise DataHubError("public release_id is missing or malformed")
+        lookback = manifest.get("max_lookback")
+        if type(lookback) is not int or not 1 <= lookback <= 3:
+            raise DataHubError("public manifest exceeds the supported lookback cap")
+        if manifest.get("max_lookback_unit") != PUBLIC_LOOKBACK_UNIT:
+            raise DataHubError("public manifest lookback unit is missing or unsupported")
+        if manifest.get("e_stat_candidates_approved") is not False:
+            raise DataHubError("e-Stat candidates must remain unapproved")
+
         files = manifest.get("files")
         if not isinstance(files, dict):
-            distribution = manifest.get("distribution")
-            files = distribution.get("files") if isinstance(distribution, dict) else None
-        if not isinstance(files, dict):
             raise DataHubError("manifest is missing files")
-        if manifest.get("max_lookback", 3) not in (1, 2, 3):
-            raise DataHubError("public manifest exceeds the supported lookback cap")
+        item = files.get("official-bundle.json")
+        if not isinstance(item, dict):
+            raise DataHubError("manifest does not list official-bundle.json")
+        if item.get("entitlement_scope") != "public_sample":
+            raise DataHubError("official bundle is not marked public_sample")
+        if item.get("data_status") != "verified":
+            raise DataHubError("official bundle is not marked verified")
+        if not str(item.get("content_type", "")).lower().startswith("application/json"):
+            raise DataHubError("official bundle content type is not JSON")
+        _public_asset_url(item.get("url"), release_id)
         return manifest
 
     def load_macro_snapshot(self) -> MacroSnapshot:
@@ -183,7 +224,7 @@ class DataHubClient:
         item = files.get("official-bundle.json")
         if not isinstance(item, dict):
             raise DataHubError("manifest does not list official-bundle.json")
-        url = _https_url(item.get("url"), "official-bundle URL")
+        url = _public_asset_url(item.get("url"), str(manifest["release_id"]))
         expected_sha = item.get("sha256")
         expected_size = item.get("byte_size", item.get("size_bytes"))
         if not isinstance(expected_sha, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", expected_sha):
@@ -205,6 +246,15 @@ class DataHubClient:
             raise DataHubError("unsupported official bundle schema")
         if not isinstance(bundle.get("series"), list):
             raise DataHubError("official bundle series must be a list")
+        distribution = bundle.get("distribution")
+        if not isinstance(distribution, dict):
+            raise DataHubError("official bundle is missing distribution boundary metadata")
+        if distribution.get("entitlement_scope") != "public_sample":
+            raise DataHubError("official bundle entitlement scope is not public_sample")
+        if distribution.get("max_lookback_months") != manifest["max_lookback"]:
+            raise DataHubError("manifest and bundle lookback periods do not match")
+        if distribution.get("estat_candidates_approved") is not False:
+            raise DataHubError("official bundle cannot approve e-Stat candidates")
         _validate_public_window(bundle, manifest)
 
         series_file = DataHubFile(
