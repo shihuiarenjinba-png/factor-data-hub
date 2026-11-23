@@ -17,28 +17,32 @@ class DataHubClientTests(unittest.TestCase):
                     "country": "US",
                     "label": "CPI",
                     "unit": "Index",
-                    "points": [{"date": "2026-10", "value": 1.0}],
+                    "points": [{"date": "2026-10-01", "value": 1.0}],
                 },
                 {
                     "series_id": "marts:sample",
                     "source": "Census Bureau",
                     "country": "US",
                     "dimensions": {"seasonally_adj": "yes"},
-                    "points": [{"date": "2026-10", "value": 2.0}],
+                    "points": [{"date": "2026-10-01", "value": 2.0}],
                 },
             ],
-            "jp_candidates": [{"target_id": "jp.candidate", "observations": [{"value": 10}]}],
+            "jp_candidates": [{"target_id": "jp.candidate", "observations": [{"date": "2026-10-15", "value": 10}]}],
         }
         self.bundle_bytes = json.dumps(self.bundle).encode("utf-8")
         self.manifest = {
             "generated_at": self.bundle["generated_at"],
-            "distribution": {
-                "release_id": "2026-11-30T03-17-00Z",
-                "files": {
+            "published_at": "2026-11-30T03:17:00Z",
+            "release_id": "sample-20261130T031700Z",
+            "entitlement_scope": "public_sample",
+            "max_lookback": 3,
+            "e_stat_candidates_approved": False,
+            "files": {
                     "official-bundle.json": {
-                        "url": "https://data.example/releases/current/official-bundle.json",
+                        "url": "https://github.com/shihuiarenjinba-png/data-hub-distribution/releases/download/sample-20261130T031700Z/official-bundle.json",
                         "sha256": hashlib.sha256(self.bundle_bytes).hexdigest(),
-                        "size_bytes": len(self.bundle_bytes),
+                        "byte_size": len(self.bundle_bytes),
+                        "entitlement_scope": "public_sample",
                         "content_type": "application/json; charset=utf-8",
                     }
                 },
@@ -49,7 +53,7 @@ class DataHubClientTests(unittest.TestCase):
     def client(self, bundle_bytes=None):
         payloads = {
             "https://data.example/latest/manifest.json": self.manifest_bytes,
-            self.manifest["distribution"]["files"]["official-bundle.json"]["url"]:
+            self.manifest["files"]["official-bundle.json"]["url"]:
                 self.bundle_bytes if bundle_bytes is None else bundle_bytes,
         }
         return DataHubClient(
@@ -65,7 +69,7 @@ class DataHubClientTests(unittest.TestCase):
         self.assertFalse(snapshot.context_summary()["estat_candidates_approved"])
         metadata = snapshot.metadata_rows()
         self.assertEqual(metadata[1]["seasonal_adjustment"], "yes")
-        self.assertEqual(metadata[0]["start_date"], "2026-10")
+        self.assertEqual(metadata[0]["start_date"], "2026-10-01")
 
     def test_rejects_checksum_mismatch(self):
         with self.assertRaisesRegex(DataHubError, "SHA-256"):
